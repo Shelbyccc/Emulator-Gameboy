@@ -76,7 +76,7 @@ public:
 			return RAMBanks[addr - 0xA000] & 0xF;
 		}
 
-		return 0xFF;
+		return 0xFF;										//содержимое не определено
 	}
 };
 

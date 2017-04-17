@@ -19,7 +19,7 @@ A000-BFFF - RAM Bank 00-03, если имеется (Чтение/Запись)
 
 4000-5FFF - RAM Bank Number - or - Верхние биты of ROM Bank Number (Запись)
 
-6000-7FFF - ROM/RAM Выбор режим (Запись)
+6000-7FFF - ROM/RAM Выбор режима (Запись)
 */
 class MBC1 : public MBC
 {
@@ -151,7 +151,7 @@ public:
 			}
 		}
 
-		return 0xFF;
+		return 0xFF;																	//содержимое не определено
 	}
 
 private:
