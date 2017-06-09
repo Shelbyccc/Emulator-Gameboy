@@ -1,5 +1,9 @@
 #pragma once
 
-typedef unsigned char BYTE;			//новые имена типов
+#undef BYTE
+#undef WORD
+#undef DWORD
+
+typedef unsigned char BYTE;
 typedef unsigned short WORD;
 typedef unsigned long DWORD;

@@ -7,318 +7,334 @@
 namespace GameBoy
 {
 
-/*
-RTC-часы реального времни
+	/*
+	Beside for the ability to access up to 2MB ROM (128 banks), and 32KB RAM (4 banks), the MBC3 also includes a built-in Real Time Clock (RTC).
+	The RTC requires an external 32.768 kHz Quartz Oscillator, and an external battery (if it should continue to tick when the gameboy is turned off).
 
-0000-3FFF - ROM Bank 00 (Чтение)
+	0000-3FFF - ROM Bank 00 (Read Only)
+	Same as for MBC1.
 
-4000-7FFF - ROM Bank 01-7F (Чтение)
+	4000-7FFF - ROM Bank 01-7F (Read Only)
+	Same as for MBC1, except that accessing banks 20h, 40h, and 60h is supported now.
 
-A000-BFFF - RAM Bank 00-03, если есть (Чтение/Запись)
-A000-BFFF - RTC Register 08-0C (Чтение/Запись)
+	A000-BFFF - RAM Bank 00-03, if any (Read/Write)
+	A000-BFFF - RTC Register 08-0C (Read/Write)
+	Depending on the current Bank Number/RTC Register selection (see below), this memory space is used to access an 8KByte external RAM Bank,
+	or a single RTC Register.
 
-0000-1FFF - RAM and Timer Enable (Запись)
+	0000-1FFF - RAM and Timer Enable (Write Only)
+	Mostly the same as for MBC1, a value of 0Ah will enable reading and writing to external RAM - and to the RTC Registers!
+	A value of 00h will disable either.
 
-2000-3FFF - ROM Bank Number (Запись)
+	2000-3FFF - ROM Bank Number (Write Only)
+	Same as for MBC1, except that the whole 7 bits of the RAM Bank Number are written directly to this address.
+	As for the MBC1, writing a value of 00h, will select Bank 01h instead. All other values 01-7Fh select the corresponding ROM Banks.
 
-4000-5FFF - RAM Bank Number - or - RTC Register Select (Запись)
+	4000-5FFF - RAM Bank Number - or - RTC Register Select (Write Only)
+	As for the MBC1s RAM Banking Mode, writing a value in range for 00h-03h maps the corresponding external RAM Bank (if any) into memory at A000-BFFF.
+	When writing a value of 08h-0Ch, this will map the corresponding RTC register into memory at A000-BFFF.
+	That register could then be read/written by accessing any address in that area, typically that is done by using address A000.
 
-6000-7FFF - Latch Clock Data(Фиксатор) (Запись)
+	6000-7FFF - Latch Clock Data (Write Only)
+	When writing 00h, and then 01h to this register, the current time becomes latched into the RTC registers.
+	The latched data will not change until it becomes latched again, by repeating the write 00h->01h procedure.
+	This is supposed for <reading> from the RTC registers. It is proof to read the latched (frozen) time from the RTC registers,
+	while the clock itself continues to tick in background.
 
-The Clock Counter Registers
-  08h  RTC S   Секунды   0-59 (0-3Bh)
-  09h  RTC M   Минуты  0-59 (0-3Bh)
-  0Ah  RTC H   Часы     0-23 (0-17h)
-  0Bh  RTC DL  Младшие 8 бит счетчик дней (0-FFh)
-  0Ch  RTC DH  Upper 1 bit of Day Counter, Carry Bit, Halt Flag
-        Bit 0  Самый старший бит Счетчика Дней (Bit 8)
-        Bit 6  Остановка (0=Active, 1=Stop Timer)
-        Bit 7  Бит Переноса (1=Counter Overflow)
-Флаг остановки должен быть установлен перед записью в регистры RTC.
+	The Clock Counter Registers
+	08h  RTC S   Seconds   0-59 (0-3Bh)
+	09h  RTC M   Minutes   0-59 (0-3Bh)
+	0Ah  RTC H   Hours     0-23 (0-17h)
+	0Bh  RTC DL  Lower 8 bits of Day Counter (0-FFh)
+	0Ch  RTC DH  Upper 1 bit of Day Counter, Carry Bit, Halt Flag
+	Bit 0  Most significant bit of Day Counter (Bit 8)
+	Bit 6  Halt (0=Active, 1=Stop Timer)
+	Bit 7  Day Counter Carry Bit (1=Counter Overflow)
+	The Halt Flag is supposed to be set before <writing> to the RTC Registers.
 
-The Day Counter
-Всего 9 бит Счетчика Дней позволяют считать дни в диапазоне от 0-511 (0-1FFh). Бит Переноса Счетчика Дней устанавливается, когда это значение переполняется.
-В этом случае Бит Переноса остается установленным, пока программа не сбросит его.
-*/
-class MBC3 : public MBC
-{
-public:
-	enum MBC3ModesEnum
+	The Day Counter
+	The total 9 bits of the Day Counter allow to count days in range from 0-511 (0-1FFh). The Day Counter Carry Bit becomes set when this value overflows.
+	In that case the Carry Bit remains set until the program does reset it.
+	*/
+	class MBC3 : public MBC
 	{
-		RAMBankMapping = 0,
-		RTCRegisterMapping = 1
-	};
-
-	enum RTCRegistersEnum
-	{
-		RTC_S = 0,
-		RTC_M = 1,
-		RTC_H = 2,
-		RTC_DL = 3,
-		RTC_DH = 4
-	};
-
-	MBC3(BYTE *ROM, DWORD ROMSize, BYTE *RAMBanks, DWORD RAMSize) : MBC(ROM, ROMSize, RAMBanks, RAMSize)
-	{
-		Mode = RAMBankMapping;
-		ROMOffset = ROMBankSize;
-		RAMOffset = 0;
-		RAMRTCEnabled = false;
-		LastLatchWrite = 0xFF;
-		BaseTime = 0;
-		HaltTime = 0;
-	}
-
-	virtual void Write(WORD addr, BYTE value)
-	{
-		switch (addr & 0xF000)
+	public:
+		enum MBC3ModesEnum
 		{
-		//RAM/RTC registers enable/disable
-		case 0x0000:
-		case 0x1000:
-			RAMRTCEnabled = (value & 0x0F) == 0x0A;
-			break;
+			RAMBankMapping = 0,
+			RTCRegisterMapping = 1
+		};
 
-		//ROM bank switching
-		case 0x2000:
-		case 0x3000:
-			ROMOffset = value & 0x7F;
-			ROMOffset %= ROMSize;
+		enum RTCRegistersEnum
+		{
+			RTC_S = 0,
+			RTC_M = 1,
+			RTC_H = 2,
+			RTC_DL = 3,
+			RTC_DH = 4
+		};
 
-			if (ROMOffset == 0)
+		MBC3(BYTE *ROM, DWORD ROMSize, BYTE *RAMBanks, DWORD RAMSize) : MBC(ROM, ROMSize, RAMBanks, RAMSize)
+		{
+			Mode = RAMBankMapping;
+			ROMOffset = ROMBankSize;
+			RAMOffset = 0;
+			RAMRTCEnabled = false;
+			LastLatchWrite = 0xFF;
+			BaseTime = 0;
+			HaltTime = 0;
+		}
+
+		virtual void Write(WORD addr, BYTE value)
+		{
+			switch (addr & 0xF000)
 			{
-				ROMOffset = 1;
-			}
+				//RAM/RTC registers enable/disable
+			case 0x0000:
+			case 0x1000:
+				RAMRTCEnabled = (value & 0x0F) == 0x0A;
+				break;
 
-			ROMOffset *= ROMBankSize;
-			break;
+				//ROM bank switching
+			case 0x2000:
+			case 0x3000:
+				ROMOffset = value & 0x7F;
+				ROMOffset %= ROMSize;
 
-		//RAM bank/RTC register switching
-		case 0x4000:
-		case 0x5000:
-			if ((value & 0xF) <= 0x3)
-			{
-				Mode = RAMBankMapping;
-
-				RAMOffset = value & 0xF;
-				RAMOffset %= RAMSize;
-				RAMOffset *= RAMBankSize;
-			}
-			else if ((value & 0xF) >= 0x8 && (value & 0xF) <= 0xC)
-			{
-				Mode = RTCRegisterMapping;
-				SelectedRTCRegister = (value & 0xF) - 0x8;
-			}
-			break;
-
-		//RTC data latch
-		case 0x6000:
-		case 0x7000:
-			if (Mode == RTCRegisterMapping)
-			{
-				if (LastLatchWrite == 0 && value == 1)
+				if (ROMOffset == 0)
 				{
-					LatchRTCData();
+					ROMOffset = 1;
 				}
-				LastLatchWrite = value;
-			}
-			break;
 
-		//Switchable RAM bank/RTC register
-		case 0xA000:
-		case 0xB000:
-			if (RAMRTCEnabled)
-			{
-				if (Mode == RAMBankMapping)
+				ROMOffset *= ROMBankSize;
+				break;
+
+				//RAM bank/RTC register switching
+			case 0x4000:
+			case 0x5000:
+				if ((value & 0xF) <= 0x3)
 				{
-					RAMBanks[RAMOffset + (addr - 0xA000)] = value;
+					Mode = RAMBankMapping;
+
+					RAMOffset = value & 0xF;
+					RAMOffset %= RAMSize;
+					RAMOffset *= RAMBankSize;
 				}
-				else if (Mode == RTCRegisterMapping)
+				else if ((value & 0xF) >= 0x8 && (value & 0xF) <= 0xC)
 				{
-					switch (SelectedRTCRegister)
+					Mode = RTCRegisterMapping;
+					SelectedRTCRegister = (value & 0xF) - 0x8;
+				}
+				break;
+
+				//RTC data latch
+			case 0x6000:
+			case 0x7000:
+				if (Mode == RTCRegisterMapping)
+				{
+					if (LastLatchWrite == 0 && value == 1)
 					{
-					case RTC_S:
-						{
-							time_t oldBasetime = (RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL);
-							BaseTime += (oldBasetime - BaseTime) % 60;
-							BaseTime -= value;
-						}
-						break;
-
-					case RTC_M:
-						{
-							time_t oldBasetime = (RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL);
-							time_t oldMinutes = ((oldBasetime - BaseTime) / 60) % 60;
-							BaseTime += oldMinutes * 60;
-							BaseTime -= value * 60;
-						}
-						break;
-
-					case RTC_H:
-						{
-							time_t oldBasetime = (RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL);
-							time_t oldHours = ((oldBasetime - BaseTime) / 3600) % 24;
-							BaseTime += oldHours * 3600;
-							BaseTime -= value * 3600;
-						}
-						break;
-
-					case RTC_DL:
-						{
-							time_t oldBasetime = (RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL);
-							time_t oldLowDays = ((oldBasetime - BaseTime) / 86400) % 0xFF;
-							BaseTime += oldLowDays * 86400;
-							BaseTime -= value * 86400;
-						}
-						break;
-
-					case RTC_DH:
-						{
-							time_t oldBasetime = (RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL);
-							time_t oldHighDays = ((oldBasetime - BaseTime) / 86400) & 0x100;
-							BaseTime += oldHighDays * 86400;
-							BaseTime -= ((value & 0x1) << 8) * 86400;
-
-							if ((RTCRegisters[RTC_DH] ^ value) & 0x40)
-							{
-								if (value & 0x40)
-								{
-									HaltTime = std::time(NULL);
-								}
-								else
-								{
-									BaseTime +=	std::time(NULL) - HaltTime;
-								}
-							}
-						}
-						break;
+						LatchRTCData();
 					}
+					LastLatchWrite = value;
+				}
+				break;
 
-					RTCRegisters[SelectedRTCRegister] = value;
+				//Switchable RAM bank/RTC register
+			case 0xA000:
+			case 0xB000:
+				if (RAMRTCEnabled)
+				{
+					if (Mode == RAMBankMapping)
+					{
+						RAMBanks[RAMOffset + (addr - 0xA000)] = value;
+					}
+					else if (Mode == RTCRegisterMapping)
+					{
+						switch (SelectedRTCRegister)
+						{
+						case RTC_S:
+						{
+									  time_t oldBasetime = (RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL);
+									  BaseTime += (oldBasetime - BaseTime) % 60;
+									  BaseTime -= value;
+						}
+							break;
+
+						case RTC_M:
+						{
+									  time_t oldBasetime = (RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL);
+									  time_t oldMinutes = ((oldBasetime - BaseTime) / 60) % 60;
+									  BaseTime += oldMinutes * 60;
+									  BaseTime -= value * 60;
+						}
+							break;
+
+						case RTC_H:
+						{
+									  time_t oldBasetime = (RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL);
+									  time_t oldHours = ((oldBasetime - BaseTime) / 3600) % 24;
+									  BaseTime += oldHours * 3600;
+									  BaseTime -= value * 3600;
+						}
+							break;
+
+						case RTC_DL:
+						{
+									   time_t oldBasetime = (RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL);
+									   time_t oldLowDays = ((oldBasetime - BaseTime) / 86400) % 0xFF;
+									   BaseTime += oldLowDays * 86400;
+									   BaseTime -= value * 86400;
+						}
+							break;
+
+						case RTC_DH:
+						{
+									   time_t oldBasetime = (RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL);
+									   time_t oldHighDays = ((oldBasetime - BaseTime) / 86400) & 0x100;
+									   BaseTime += oldHighDays * 86400;
+									   BaseTime -= ((value & 0x1) << 8) * 86400;
+
+									   if ((RTCRegisters[RTC_DH] ^ value) & 0x40)
+									   {
+										   if (value & 0x40)
+										   {
+											   HaltTime = std::time(NULL);
+										   }
+										   else
+										   {
+											   BaseTime += std::time(NULL) - HaltTime;
+										   }
+									   }
+						}
+							break;
+						}
+
+						RTCRegisters[SelectedRTCRegister] = value;
+					}
+				}
+				break;
+			}
+		}
+
+		virtual BYTE Read(WORD addr)
+		{
+			switch (addr & 0xF000)
+			{
+				//ROM bank 0
+			case 0x0000:
+			case 0x1000:
+			case 0x2000:
+			case 0x3000:
+				return ROM[addr];
+
+				//ROM bank 1
+			case 0x4000:
+			case 0x5000:
+			case 0x6000:
+			case 0x7000:
+				return ROM[ROMOffset + (addr - 0x4000)];
+
+				//Switchable RAM bank/RTC register
+			case 0xA000:
+			case 0xB000:
+				if (RAMRTCEnabled)
+				{
+					if (Mode == RAMBankMapping)
+					{
+						return RAMBanks[RAMOffset + (addr - 0xA000)];
+					}
+					else
+					{
+						return RTCRegisters[SelectedRTCRegister];
+					}
 				}
 			}
-			break;
+
+			return 0xFF;
 		}
-	}
 
-	virtual BYTE Read(WORD addr)
-	{
-		switch (addr & 0xF000)
+		virtual bool SaveRAM(const char *path, DWORD RAMSize)
 		{
-		//ROM bank 0
-		case 0x0000:
-		case 0x1000:
-		case 0x2000:
-		case 0x3000:
-			return ROM[addr];
-
-		//ROM bank 1
-		case 0x4000:
-		case 0x5000:
-		case 0x6000:
-		case 0x7000:
-			return ROM[ROMOffset + (addr - 0x4000)];
-
-		//Switchable RAM bank/RTC register
-		case 0xA000:
-		case 0xB000:
-			if (RAMRTCEnabled)
+			FILE *file = NULL;
+			fopen_s(&file, path, "wb");
+			if (file == NULL)
 			{
-				if (Mode == RAMBankMapping)
-				{
-					return RAMBanks[RAMOffset + (addr - 0xA000)];
-				}
-				else
-				{
-					return RTCRegisters[SelectedRTCRegister];
-				}
+				return true;
 			}
+
+			fwrite(RAMBanks, RAMSize, 1, file);
+
+			fwrite(&BaseTime, sizeof(BaseTime), 1, file);
+			fwrite(&HaltTime, sizeof(HaltTime), 1, file);
+			fwrite(RTCRegisters, sizeof(BYTE), 5, file);
+
+			fflush(file);
+			fclose(file);
+
+			return false;
 		}
 
-		return 0xFF;
-	}
-
-	virtual bool SaveRAM(const char *path, DWORD RAMSize)
-	{
-		FILE *file = NULL;
-		fopen_s(&file, path, "wb");
-		if (file == NULL)
+		virtual bool LoadRAM(const char *path, DWORD RAMSize)
 		{
-			return true;
-		}
-
-		fwrite(RAMBanks, RAMSize, 1, file);
-
-		fwrite(&BaseTime, sizeof(BaseTime), 1, file);
-		fwrite(&HaltTime, sizeof(HaltTime), 1, file);
-		fwrite(RTCRegisters, sizeof(BYTE), 5, file);
-
-		fflush(file);
-		fclose(file);
-
-		return false;
-	}
-
-	virtual bool LoadRAM(const char *path, DWORD RAMSize)
-	{
-		FILE *file = NULL;
-		fopen_s(&file, path, "rb");
-		if (file == NULL)
-		{
-			return true;
-		}
-
-		fread(RAMBanks, RAMSize, 1, file);
-
-		fread(&BaseTime, sizeof(BaseTime), 1, file);
-		fread(&HaltTime, sizeof(HaltTime), 1, file);
-		fread(RTCRegisters, sizeof(BYTE), 5, file);
-
-		fflush(file);
-		fclose(file);
-
-		return false;
-	}
-
-private:
-	void LatchRTCData()
-	{
-		time_t passedTime = ((RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL)) - BaseTime;
-
-		if (passedTime > 0x1FF * 86400)
-		{
-			do
+			FILE *file = NULL;
+			fopen_s(&file, path, "rb");
+			if (file == NULL)
 			{
-				passedTime -= 0x1FF * 86400;
-				BaseTime += 0x1FF * 86400;
-			}while (passedTime > 0x1FF * 86400);
+				return true;
+			}
 
-			RTCRegisters[RTC_DH] |= 0x80;//Day counter overflow
+			fread(RAMBanks, RAMSize, 1, file);
+
+			fread(&BaseTime, sizeof(BaseTime), 1, file);
+			fread(&HaltTime, sizeof(HaltTime), 1, file);
+			fread(RTCRegisters, sizeof(BYTE), 5, file);
+
+			fflush(file);
+			fclose(file);
+
+			return false;
 		}
 
-		RTCRegisters[RTC_DL] = (passedTime / 86400) & 0xFF;
-		RTCRegisters[RTC_DH] &= 0xFE;
-		RTCRegisters[RTC_DH] |= ((passedTime / 86400) & 0x100) >> 8;
-		passedTime %= 86400;
+	private:
+		void LatchRTCData()
+		{
+			time_t passedTime = ((RTCRegisters[RTC_DH] & 0x40) ? HaltTime : std::time(NULL)) - BaseTime;
 
-		RTCRegisters[RTC_H] = (passedTime / 3600) & 0xFF;
-		passedTime %= 3600;
+			if (passedTime > 0x1FF * 86400)
+			{
+				do
+				{
+					passedTime -= 0x1FF * 86400;
+					BaseTime += 0x1FF * 86400;
+				} while (passedTime > 0x1FF * 86400);
 
-		RTCRegisters[RTC_M] = (passedTime / 60) & 0xFF;
-		passedTime %= 60;
+				RTCRegisters[RTC_DH] |= 0x80;//Day counter overflow
+			}
 
-		RTCRegisters[RTC_S] = passedTime & 0xFF;
-	}
+			RTCRegisters[RTC_DL] = (passedTime / 86400) & 0xFF;
+			RTCRegisters[RTC_DH] &= 0xFE;
+			RTCRegisters[RTC_DH] |= ((passedTime / 86400) & 0x100) >> 8;
+			passedTime %= 86400;
 
-	BYTE RTCRegisters[5];
-	BYTE SelectedRTCRegister;
+			RTCRegisters[RTC_H] = (passedTime / 3600) & 0xFF;
+			passedTime %= 3600;
 
-	MBC3ModesEnum Mode;
-	bool RAMRTCEnabled;
+			RTCRegisters[RTC_M] = (passedTime / 60) & 0xFF;
+			passedTime %= 60;
 
-	std::time_t BaseTime;
-	std::time_t HaltTime;
-	BYTE LastLatchWrite;
-};
+			RTCRegisters[RTC_S] = passedTime & 0xFF;
+		}
+
+		BYTE RTCRegisters[5];
+		BYTE SelectedRTCRegister;
+
+		MBC3ModesEnum Mode;
+		bool RAMRTCEnabled;
+
+		std::time_t BaseTime;
+		std::time_t HaltTime;
+		BYTE LastLatchWrite;
+	};
 
 }

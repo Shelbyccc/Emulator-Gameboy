@@ -6,30 +6,60 @@
 namespace GameBoy
 {
 
-const int ROMBankSize = 0x4000;
-const int RAMBankSize = 0x2000;
+	const int ROMBankSize = 0x4000;	
+	const int RAMBankSize = 0x2000;
 
-class MBC														//базовый класс
-{
-public:
-	virtual void Write(WORD addr, BYTE value) = 0;
-	virtual BYTE Read(WORD addr) = 0;
-	
-	virtual bool SaveRAM(const char *path, DWORD RAMSize);		//Сохранение и загрузка будут реализованы позже
+	class MBC
+	{
+	public:
+		virtual void Write(WORD addr, BYTE value) = 0;	//смена банков памяти
+		virtual BYTE Read(WORD addr) = 0;	//чтение из текущего банка памяти
 
-	virtual bool LoadRAM(const char *path, DWORD RAMSize);
+		virtual bool SaveRAM(const wchar_t *path, DWORD RAMSize)	//сохранение ОЗУ
+		{
+			FILE *file = NULL;
+			_wfopen_s(&file, path, L"wb");
+			if (file == NULL)
+			{
+				return true;
+			}
 
-protected:
-	MBC(BYTE *ROM, DWORD ROMSize, BYTE *RAMBanks, DWORD RAMSize) : ROM(ROM), ROMSize(ROMSize), RAMBanks(RAMBanks), RAMSize(RAMSize) {}
+			fwrite(RAMBanks, RAMSize, 1, file);
 
-	BYTE *ROM;				//Здесь у нас находится весь образ игры.
-	BYTE *RAMBanks;			//Здесь находится оперативная память картриджа.
+			fflush(file);
+			fclose(file);
 
-	DWORD ROMOffset;		//Это смещения, которые указывают на текущий банк памяти.
-	DWORD RAMOffset;		
+			return false;
+		}
 
-	DWORD ROMSize;			
-	DWORD RAMSize;			
-};
+		virtual bool LoadRAM(const wchar_t *path, DWORD RAMSize)	//загрузка ОЗУ
+		{
+			FILE *file = NULL;
+			_wfopen_s(&file, path, L"rb");
+			if (file == NULL)
+			{
+				return true;
+			}
+
+			fread(RAMBanks, RAMSize, 1, file);
+
+			fflush(file);
+			fclose(file);
+
+			return false;
+		}
+
+	protected:
+		MBC(BYTE *ROM, DWORD ROMSize, BYTE *RAMBanks, DWORD RAMSize) : ROM(ROM), ROMSize(ROMSize), RAMBanks(RAMBanks), RAMSize(RAMSize) {}
+
+		BYTE *ROM;		//ROM. Здесь у нас находится весь образ игры.
+		BYTE *RAMBanks;	//RAMBanks. Здесь находится оперативная память картриджа.
+
+		DWORD ROMOffset;//Смещения, указывающие на текущий банк памяти.
+		DWORD RAMOffset;
+
+		DWORD ROMSize;	//Размеры памяти.
+		DWORD RAMSize;
+	};
 
 }
